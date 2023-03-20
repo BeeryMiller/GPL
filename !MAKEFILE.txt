@@ -1,0 +1,42 @@
+* !MAKEFILE for GPL/TIMODE Interpreter
+*
+* Usage:
+*      MAKE GPL          Assemble based on last modified date; Link.
+*      MAKE GPL,F        FULL assemble/link. Ignore timestamps
+*
+* History:
+* --------
+*  TT  2023-Mar-17       Create MAKE file structure starting with v7.40
+*  TT  2023-Mar-18       Reorganized folder structure w/SRC and /BIN
+*
+*
+GPL:   TASK78 DSRLNK CHARSET VDPIO GETSTR KEY
+       WIPE
+       SRC\TILINK !LINKGPL
+
+TASK78:      SRC\TASK78O
+SRC\TASK78O: SRC\TASK78S
+       ASM SRC\TASK78S,SRC\TASK78O,,RCO
+
+DSRLNK:      SRC\DSRLNKO
+SRC\DSRLNKO: SRC\DSRLNKS
+       ASM SRC\DSRLNKS,SRC\DSRLNKO,,RCO
+
+
+CHARSET:      SRC\CHARSETO
+SRC\CHARSETO: SRC\CHARSETS
+       ASM SRC\CHARSETS,SRC\CHARSETO,,RCO
+
+VDPIO:      SRC\VDPIOO
+SRC\VDPIOO: SRC\VDPIOS
+       ASM SRC\VDPIOS,SRC\VDPIOO,,RCO
+
+GETSTR:       SRC\GETSTRO
+SRC\GETSTRO:  SRC\GETSTRS
+       ASM SRC\GETSTRS,SRC\GETSTRO,,RCO
+
+KEY:        SRC\KEYO
+SRC\KEYO:   SRC\KEYS
+       ASM SRC\KEYS,SRC\KEYO,,RCO
+
+** End of File

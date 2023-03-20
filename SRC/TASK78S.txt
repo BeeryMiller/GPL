@@ -1,0 +1,1333 @@
+* TASK78S
+*
+*      01.14.96 TAT fixed video register reset problems
+*      03.01.94 ESCAPE added to return to MDOS  - no more CTRL-ALT-DEL needed
+*      03.02.94 FIREbutton and joystick problems fixed; doc'd in KEYS
+*      06.30.96 TAT, Added ROMPAGE option to menu
+*      05.16.98 Modified version...no changes to code.
+*
+* >>>  >8100 contains the page number of GPL's task 0 page. Used for programs
+*      that call XOPs from GPL.
+*
+* 8/27/90 - made GPL DSR-page independent
+*
+; 2.27.2021 (started Feb 16 2019)
+;      - Updated version text to 7.2
+;      - Removes WDS Winchester powerup routine
+;      - Removed 'hacking protection'
+;      - Added PUPOS for /4a powerup call via master DSR
+;      - Added TIMODE to title and startup warning (if timode disabled)
+;      - GPL title color now matches OS color (if called from text 40/80)
+;      - Force /4a Master dsr powerup upon entry/return to GPL title
+;      - KEYS:QWKESC powerup disabled; it wasn't written properly
+;           $Must fix NUMFIL for max files
+;           $Look at DSRPASS-S 9640 powerup
+; 2.28.2021
+;      - Added 'HFDC' to the DSK1 emulation menu item (clarification)
+;      - QWKESC powerup adjusted to use HDR2-P2:PWRUP3
+; 4.4.2021
+;      - Version 7.3 to match OS release
+;
+; 8.28.2021
+;      - Cleaned up some comments and pagemap info
+;      - Clarified PATCHS; real code and DORG code must match!
+;      - Fixed speed per @mizapf identification of issue in CALL99 whereby
+;        speed 1 map was failing if speed 4 or 5 was first selected.
+;
+; 10.15.2021 - MODIFIED vwtr patch to allow text mode II (Adventure)
+;              this may cause problems with other carts. See option (v)
+;
+; 03.12.2023 v7.40
+;           - Added options to command line  GPL /options filename
+;           - /R12345V
+;              ^|||||^-9938 support
+;              ||||||----speed 1-5
+;              |-enables rompage for autostart
+;
+;          $$ Can we move 'timode' test so that a ? mark will always show help
+;           - Removed GPL vwtr patch; added option V for this use case
+;          $$ mizapf hfdc powerup head reset/seek timing still under review
+;          $$ The only reason GPL requires a DSRLNK routine is because the
+;             cartridge loader is using /4a move to load the file. Investigate
+;             whether we can eliminate the code by using an MDOS PAB/loader.
+;             Push the file into open fast ram page then copy to destination.
+;             Potentially faster. virtual page map may hinder us.
+;
+       DEF  KBVEC0,KBVEC1,KBVEC2,MDMAP       * TEST INF
+
+       DEF  VIDMOD
+       DEF  EMIT1
+       DEF  TILOAD
+       DEF  KBRET,KBRET2
+       DEF  QUITF
+       REF  QWKESC            Quick GPL ESCAPE vie the ESCape key!
+       REF  KSCAN
+       REF  VMBW$
+       REF  GETSTR,DSR$
+       REF  VMBR$
+       REF  KEYS0,KEYS1,KEYS2,KMODE,KEYSDN
+       REF  BLINKF
+       REF  CAPFLG,CHARS
+*
+; What WS is in effect at this entry point ?
+
+
+ENTER  LIMI 0
+       MOV  @>0126,R0         test if GPL mode is on
+       JNE  GPL000
+       BL   @PRINT
+       TEXT 'not configured for GPL (TIMODE/TIMODE2) emulation!'
+       BYTE >0D,>0A,0
+       BLWP @0
+*
+* get our map, copy keyboard table over
+*
+GPL000 LI   R0,1
+       XOP  @SIX,0
+       MOV  R0,@VIDMOD->A000
+*
+       CI   R10,10       mode 90 (26.5 line text)
+       JEQ  SETCLR       yes
+       CI   R0,2         mode 40/80 (24 line text)
+       JH   NOSETC       no
+
+SETCLR ANDI R7,>0F0F     mask all but F|B
+       MOV  R7,R1        0000 ffff 0000 bbbb
+       SLA  R1,4      R1=ffff 0000 bbbb 0000
+       SLA  R7,8      R7=0000 bbbb 0000 0000
+       A    R1,R7     R7=ffff bbbb bbbb 0000
+       MOVB R7,@VDPDFB+1->A000   Write colors to vdp reg near eof
+
+NOSETC MOV  @>F110,@MDMAP->A000
+       MOV  @>F112,@MDMAP+2->A000
+       MOV  @>F114,@MDMAP+4->A000
+       MOV  @>F116,@MDMAP+6->A000
+*
+       MOVB @GVAR00,@>F115    map in system header
+*
+       MOVB @>A442,@UMAP+2->A000    get DSR >4000 page number
+*
+       MOVB @>A429,@>F115     map in the KB stuff--through systable
+       MOV  @>A012,R0         get pointer to keysdn
+       AI   R0,>8000          make it a pointer into our memory
+       LI   R1,KEYSDN
+       AI   R1,->A000
+       LI   R2,>100
+GPL001 MOVB *R0+,*R1+         move over the key info
+       DEC  R2
+       JNE  GPL001
+*
+       MOV  @>A014,R1         point to system kb registers
+       AI   R1,>8000
+       LI   R2,CAPFLG
+       AI   R2,->A000
+       MOV  @18(R1),*R2+      get capflag
+       MOV  @20(R1),*R2+      get numflag
+*
+*
+* get filename from command line
+*
+       LI   R1,FILNAM->A000
+       MOVB @MAXLEN,@-1(R1)
+*
+*      convert command arg into string
+*
+*      IN:  R1 points to string buffer (byte after length byte)
+*           length byte must have max length of buffer
+*
+CMDSTR MOV  @>0128,R2         get pointer to command string
+       JEQ  NO#STR            zero length string
+       CB   @2(R2),@-1(R1)    compare lengths of strings
+       JL   LENOK             string too long for the buffer
+       MOVB @-1(R1),@2(R2)    just fill the buffer anyway
+*
+LENOK  MOV  R1,R5             cursor to caller's string buffer
+       DEC  R5
+       MOVB @2(R2),R6         count of chars to move
+       SRL  R6,8
+       INCT R6
+*
+NXTNOD MOV  R2,R3             cursor within node
+       INCT R3
+       MOV  R2,R4
+       AI   R4,8              pointer to end of node
+*
+NODL1  MOVB *R3+,*R5+
+       DEC  R6
+       JEQ  NODJ1
+       C    R3,R4
+       JL   NODL1
+       MOV  *R2,R2            this link never zero if valid string
+       JMP  NXTNOD
+*
+NODJ1  CLR  R0
+       MOVB R0,*R5            blank at end of buffer
+       JMP  NODRET
+*
+NO#STR CLR  R0
+       MOVB R0,@-1(R1)
+       MOVB R0,*R1
+       JMP  NODRET
+*
+NODRET CLR  @KEYB->A000       assume file input for now  ;FLAG for WARM ~550
+       MOVB @-1(R1),R0        len of command arg==0?
+;;     JNE  PARSEN            No, go parse it
+       JNE PARSP0        ;special parse
+
+DOKEYB SETO @KEYB->A000       yes, nothing to parse.
+       JMP  INITGP            now to initialize the loader
+*
+; 3.12.2023, special parse for command line options TT
+
+SPCL20 BYTE ' '
+SPCL1  BYTE '/'          ;indicate flag
+SPCLQ  BYTE '?'
+SPCLR  BYTE 'R'          ;enforce rompage
+SPCLV  BYTE 'V'
+SPCLS1 BYTE '1'          ;Speed 1
+SPCLS5 BYTE '5'          ;speed 5
+SPCLS0 BYTE ->30
+SPCF8  BYTE >F8          VR0 mask
+       BYTE 0
+
+;      DATA 0
+;;SPCLF1 DATA 0            ;0=no rompage; 1=rompage
+
+;Start mods for flags
+; GPL /R1 Filename       ; Rompage, Speed 1, autostart filename
+
+PARSP0 SRL  R0,8         make it a word. Duh.
+       CB   *R1,@SPCLQ   first char '?'?
+       JEQ  PARHLP       Show some help
+       CB   *R1,@SPCL1   first char a '/'?
+       JNE  PARSEN       ;no, do normal parse
+
+; Found a slash. Let's check for parameters
+PARSP1 INC  R1           next char
+       DEC  R0           one less character for the filename
+       JEQ  DOKEYB       if we get to zero, use keyboard entry
+;                        check if we can use speed option without clearing
+
+       CB   *R1,@SPCL20   ;space?
+       JNE  PARSP2       no, keep looking
+       INC  R1           yes, point beyond space to filename
+       DEC  R0
+       SWPB R0
+       MOVB R0,@-1(R1)   put new len byte into ^<len>string
+
+       JMP  PARSEN       and try to parse (could be empty string)
+; Might need to test for an empty string AFTER special parse!
+
+PARSP2 CB   *R1,@SPCLR   rompage?
+       JEQ  PARRP1       yes, set flag
+       CB   *R1,@SPCLV
+       JEQ  PARVR1
+
+       CB   *R1,@SPCLS1  no, is it speed 1-5?
+       JL   PARSP1       no, try next
+       CB   *R1,@SPCLS5
+       JH   PARSP1
+
+       AB   @SPCLS0,*R1       ;remove ascii offset
+       MOVB *R1,@SPEED->A000   ;set speed parameter!
+       JMP  PARSP1
+
+PARRP1 SETO @ROMPGE->A000      ;set rompage active
+       JMP  PARSP1
+
+; PARVR1 MOVB @SPCF8,@MASK  ;   OOPS, Mask is actually DORG'd to >0300 area
+PARVR1 MOVB @SPCF8,@FAKMSK->A000 ;fix mask for 9938 text mode
+       JMP  PARSP1
+
+PARHLP BL   @PRINT
+       BYTE 13,10
+       TEXT 'Usage: GPL /R#V filename  (R=rompage, #=speed; V=9938)'
+       BYTE >0D,>0A,0
+       BLWP @0
+
+
+; end mods
+PARSEN LI   R0,8
+       LI   R2,NAMLEN->A000
+       MOVB @MAXLEN,*R2
+       CLR  R3
+       XOP  @NINE,0           parse a potential filename
+       JNE  DOKEYB            parse error, use keyboard input
+*
+INITGP MOVB @>F110,@>F115
+       MOVB @>F110,@SAVEPAGE0+2              saves task page zero for
+*                                            calling MDOS xops under GPL
+*
+       B    @INIT00
+*
+GVAR00 BYTE 0
+MAXLEN BYTE 40
+*
+********************************************************************************
+*
+* MESG
+*
+; 2.27.21, restored this code to GPL 7.2; review more closely
+
+PRINT  MOVB *R11+,R0
+       JEQ  MESG10
+       BLWP @EMIT1
+       JMP  PRINT
+*
+MESG10 INC  R11               we don't care if r11 is odd
+       RT
+*
+CTLP   EQU  >00FA        ;hardcoded in ostask1/ostask2 via AORG
+CTLS   EQU  >00FC
+*
+EMIT1  DATA >F040,EMIT
+*
+EMIT   MOV  @CTLS,R0
+       JNE  EMIT              spin, spin, spin!
+*
+       LI   R0,>27
+       LI   R1,>F046
+       CLR  *R1
+       MOVB *R13,*R1
+       CLR  R2
+       XOP  @SIX,0
+*
+EMIT30 MOV  @EMITF,R0
+       JNE  EMIT10            no echo flag is on (cursor blink)
+*
+       MOVB *R13,@PRNBUF      buffer for printer & file redirection
+*
+       MOV  @CTLP,R0
+       JEQ  EMIT10
+*
+* printer echo goes here!
+*
+       LI   R0,PRNPAB
+       XOP  @EIGHT,0          should we check for errors?
+*
+EMIT10 RTWP
+*
+PRNPAB DATA >0302             DISPLAY,FIXED 1
+       DATA >0000
+       DATA PRNBUF
+       DATA 0,1,0,1
+       BYTE 0
+       BYTE 3
+       TEXT 'PIO'
+PRNBUF BYTE 0
+*
+EMITF  DATA 0
+SIX    DATA 6
+SEVEN  DATA 7
+EIGHT  DATA 8
+NINE   DATA 9
+*
+*----------------------------------------
+* GPL loader stuff starts here...
+*
+       RORG $+>A000
+*
+INIT00 LI   R12,>1EF4
+       SBZ  0                 switch to /4a mode
+       CLR  R12
+       LDCR R12,0             set all 16 interrupts off
+       SBO  2                 enable video interrupt
+*
+       CLR  @LODFLG           ;flag for WARM re-entry
+*
+       MOVB @UMAP+2,@>8002    >4000 page
+       MOVB @UMAP+4,@>8004    >8000 page
+*
+* CLEAR PAD RAM
+*
+       LI   R1,>8300
+INIT03 CLR  *R1+
+       CI   R1,>8400
+       JLT  INIT03
+
+;;     BL   @PUPOS       test powerup upon each return to GPL screen
+       JMP  TILOAD
+*
+; 2.16.21   Removed WDS powerup routine
+;            /4a mode powerup; verify this powers up ALL devices
+;           If we changed loader to XOPs, we could simplify the powerup/config
+;2.27.21    Evaluate powerup here, KEYS:QWKESC, return to GPL
+;
+
+PUPOS  MOV  R11,@PUPRT1+2
+       LWPI >83E0
+       LI   R12,>0700    ;2.27.21, force master DSR page online
+       MOVB R12,@>8002   ;   via >4000 space
+       MOV  @H3FFF,@>8370
+       LI   R13,>9800
+       LI   R14,>0100
+       LI   R15,>8C02
+*
+       LI   R12,>1100
+       MOV  @>4004,R9
+       MOV  @2(R9),R9
+       BL   *R9               power up the devices
+       NOP
+PUPRT1 B    @>0000
+
+DSK1PG DATA >1500        ;dsr page for dsk1 flag
+DSKFLG DATA 0            ;our flag
+
+*******************************************************************************8
+*
+* main entry point for restart ... if loadflag is on, reload
+*      the rom & grom from our pristine copy
+*
+TILOAD LIMI 0
+       LWPI TREGS        ;TI Registers set
+       CLR  R12
+       SBO  25           ;VDP wait states on!
+*
+       BL   @PUPOS       ;2.27.2021, moved powerup to clean up/always execute
+
+;;     MOV  @ROMPGE,R1        was rompage done earlier??
+;;     JEQ  NO2ND             no (at least not by using F5)
+;      BL   @PUPOS
+
+       LWPI TREGS             restore WS
+NO2ND  CLR  @KMODE            use mode 0
+       CLR  @BLINKF
+*
+* turn off the sound generator
+*
+       MOVB @H03,@>8006
+       LI   R1,QUIET
+       MOVB *R1+,@>8400
+       MOVB *R1+,@>8400
+       MOVB *R1+,@>8400
+       MOVB *R1+,@>8400
+       JMP  SOUN99
+*
+QUIET  BYTE >9F,>BF,>DF,>FF
+*
+* here, set video, set chars
+*
+SOUN99 LI   R1,VDPDAT
+TILO00 MOV  *R1+,R0
+       JEQ  TILO01
+       SWPB R0
+       MOVB R0,@>8C02
+       SWPB R0
+       MOVB R0,@>8C02
+       JMP  TILO00
+TILO01 MOVB @VDPDAT+3,@>83D4
+*
+* give them a charset
+*
+       LI   R0,>0800
+       BL   @CHARS
+*
+* welcome the user
+*----------------------------------------*
+*                                        |    0
+* GPL/TIMODE Interpreter 7.30 (ddmmyyyy) |    1
+*                                        |
+*  (c)2021 by 9640*News & Contributors   |    3
+*                                        |
+*   shift-shift-ctrl for this screen     |    5
+*                                        |    6
+*                                        |    7
+*                                        |    8
+*Which cartridge do you want to load?    |    9
+*                                        |    1
+*                                        |    11
+*                                        |    12
+*Press F1 to     Protect >6000           |    13
+*                                        |
+*Press F2 to     Protect >7000           |
+*                                        |
+*Press F3 to clear cartridge space       |
+*                                        |
+*F4:  GPL speed=5    F5:  GPL w/ROMPAGE  |
+*                                        |
+*F6:  HFDC DSK1 Emulation is On          |
+*                                        |
+*<Enter> for TI MODE or <ESC>ape for MDOS|
+*----------------------------------------*
+       LI   R0,>0040          clear the screen
+       MOVB R0,@>8C02
+       SWPB R0
+       MOVB R0,@>8C02
+       LI   R0,'  '
+       LI   R1,40*27
+TILO02 MOVB R0,@>8C00
+       DEC  R1
+       JNE  TILO02
+*
+       BL   @VPRINT
+       DATA 40*1+1
+       TEXT 'GPL/TIMODE Interpreter 7.40 (20230312)'     38
+       BYTE 0
+       BL   @VPRINT
+       DATA 40*3+3
+       TEXT   'Copyright 9640News & Contributors'   33
+       BYTE 0
+       BL   @VPRINT
+       DATA 40*5+3
+       TEXT   'shift-shift-ctrl for this screen'
+       BYTE 0
+*
+       ABS  @LODFLG
+       JEQ  TILO03
+       B    @WARM             just re-entering from /4a mode...
+*
+TILO03 SETO @LODFLG
+*
+       BL   @VPRINT           reset eveything to pristine state
+       DATA 40*9+0
+       TEXT 'Clearing GRAM...'
+       BYTE 0
+*
+       LI   R2,CLRPAG
+CLR$L1 MOVB *R2+,@>8006
+       LI   R1,>C000
+CLR$L2 CLR  *R1+
+       CLR  *R1+         2.27.2021, unroll 4x,faster
+       CLR  *R1+
+       CLR  *R1+
+       CI   R1,>E000
+       JL   CLR$L2
+*
+       CI   R2,CLREND
+       JL   CLR$L1
+*
+* set hardware configuration
+*
+       LI   R12,>1EF8
+       SETO R0                8k, unprot 6 & 8, no waits
+       LDCR R0,4
+*
+* now to copy rom,g0,g1,g2 into the ti address space
+*
+       BL   @VPRINT
+       DATA 40*9+0
+       TEXT 'Loading: Interpreter'
+       BYTE 0
+*
+       LI   R1,COPPAG
+COP$L1 MOVB *R1+,R2
+       JEQ  COP$J1
+       MOVB R2,@>8000
+       MOVB *R1+,R2
+       SRL  R2,8
+       AI   R2,MDMAP
+       MOVB *R2+,@>8001
+       MOVB *R2+,@>8002
+       MOV  *R1+,R2           source
+       MOV  *R1+,R3           dest
+       MOV  *R1+,R4           count
+COP$L2 MOVB *R2+,*R3+
+       DEC  R4           ;could unroll loop but I think this is fast enough TT
+       JNE  COP$L2
+       JMP  COP$L1
+*
+* now to install the patches into the rom
+*
+COP$J1 CLR  @QUITF            now to do patchs
+       MOV  @>0006,@OLD1      2 simple patchs
+       MOVB @>8005,@OLD2+1
+*
+;; example: PATCHS DATA >0004,>83C0,KEYINT,>83C0,MID,-1  INTERRUPT VECTORS
+*
+       LI   R2,PATCHS         now for the complex patchs
+PATCH1 MOV  *R2+,R0           ;<address>
+       MOV  R0,R1
+       INC  R1                ;-1 flag
+       JEQ  WARM              onto the interactive stuff...
+PATCH2 MOV  *R2+,R1           ;<patch data>
+       INC  R1
+       JEQ  PATCH1            ;-1 flag
+       DEC  R1
+       MOV  R1,*R0+
+       JMP  PATCH2
+*
+********************************************************************************
+*
+* here begins the main interactive stuff ...
+*
+WARM   MOV  @KEYB,R0          ;flag cleared during parse if file present
+       JNE  WARM01
+*
+       LI   R3,FILNAM
+       MOVB @NAMLEN,R4
+       SRL  R4,8
+       A    R3,R4
+       MOVB @H20,*R4          since PARSE doesn't always leave a space
+       B    @LOAD01           the user gave a name---try to load it
+*
+WARM01 BL   @VPRINT
+       DATA 40*13+0
+       TEXT '                         '
+       BYTE 0
+
+*
+* show cartridge status
+*
+       LI   R12,>1EF0
+       TB   4
+       JNE  CART16
+*
+       BL   @VPRINT           8k cart port
+       DATA 40*13+0
+       TEXT 'Press F1 to   protect >6000'
+       BYTE 0
+*
+       TB   5
+       JEQ  DSTAT1
+*
+       BL   @VPRINT
+       DATA 40*13+12
+       TEXT 'un'
+       BYTE 0
+*
+DSTAT1 BL   @VPRINT           8k cart port
+       DATA 40*15+0
+       TEXT 'Press F2 to   protect >7000'
+       BYTE 0
+*
+       TB   6
+       JEQ  STAT10
+*
+       BL   @VPRINT
+       DATA 40*15+12
+       TEXT 'un'
+       BYTE 0
+       JMP  STAT10
+*
+CART16 BL   @VPRINT           no protect bits applicable for 16k cart
+       DATA 40*13+0
+       TEXT '                           '
+       BYTE 0
+*
+       BL   @VPRINT
+       DATA 40*15+0
+       TEXT '                           '
+       BYTE 0
+*
+STAT10 MOVB @SPEED,R0         show speed status
+       AI   R0,>3000
+       MOVB R0,@STAT11
+*
+       BL   @VPRINT
+       DATA 40*17+0
+       TEXT 'Press F3 to clear cartridge space'
+       BYTE 0
+       EVEN
+       BL   @VPRINT
+       DATA 40*19+0
+       TEXT 'F4: GPL SPEED='
+STAT11 TEXT '      F5:  GPL w/ROMPAGE'
+       BYTE 0
+       EVEN
+       BL   @VPRINT
+       DATA 40*21+0                 19
+;      TEXT 'Press F6 - DSK1 Emulation is O'
+       TEXT 'F6: HFDC DSK1 Emulation is O'  ;27
+       BYTE 0
+       EVEN
+       MOVB @>8002,@DSK1PG+1
+       MOVB @DSK1PG,@>8002
+       ABS  @>4020
+       JNE  DSKOFF
+       BL   @VPRINT
+       DATA 40*21+28    30
+       TEXT 'n '
+       BYTE 0
+       JMP  ESMS
+DSKOFF BL   @VPRINT
+       DATA 40*21+28    30
+       TEXT 'ff'
+       BYTE 0
+       EVEN
+ESMS   MOVB @DSK1PG+1,@>8002
+       BL   @VPRINT
+       DATA 40*23+0
+       TEXT '<Enter> for TI Mode or <ESC>ape for MDOS'
+       BYTE 0
+       EVEN
+       BL   @VPRINT
+       DATA 40*9+0
+       TEXT 'Which cartridge do you want to load?'
+       BYTE 0
+       EVEN
+       BL   @VPRINT
+       DATA 40*11+0
+       TEXT '                                        '
+       BYTE 0
+*
+*      waiting loop...process function keys
+*
+WAITL1 MOVB @UMAP+4,@>8004
+WAITL2 BLWP @KSCAN
+       ANDI R0,>FF00
+       CLR  @ROMPGE      always clear when at this screen
+       CI   R0,>8C00          F6 (old F5 - dsk1 emulation)
+       JEQ  DO$F5
+       CI   R0,>8300          is it F1?
+       JEQ  DO$F1             yes
+       CI   R0,>8400          is it F2?
+       JEQ  DO$F2             yes
+       CI   R0,>8700          is it F3?
+       JEQ  DO$F3             yes
+       CI   R0,>8200          is it F4?
+       JEQ  DO$F4             yes
+       CI   R0,>0D00          is it CR?
+       JEQ  DO$CR             yes
+
+       CI   R0,>8E00          F5 - ROMPAGE THEN ENTER GPL  6-30-96 TAT
+       JEQ  ROM$PG
+
+       CI   R0,>1B00
+       JEQ  DOESCP
+       JMP  GETFIL
+*
+;
+; 2.27,Is this where we should implement powerup for MDOS
+;
+DOESCP B    @QWKESC
+
+DO$F5  MOVB @>8002,@DSK1PG+1                 CHANGE STATUS OF DSK1 FLAG
+       MOVB @DSK1PG,@>8002
+       ABS  @>4020
+       JNE  DSKOF1
+       SETO @>4020
+       JMP  DSKOF2
+DSKOF1 CLR  @>4020
+DSKOF2 MOVB @DSK1PG+1,@>8002
+       JMP  JMPWRM
+
+DO$F1  LI   R11,>1EFA
+       JMP  TOGBIT
+DO$F2  LI   R11,>1EFC
+TOGBIT LI   R12,>1EF8
+       TB   0
+       JNE  WAITL2
+       MOV  R11,R12
+       STCR R0,1
+       INV  R0
+       LDCR R0,1
+JMPWRM B    @WARM
+*
+DO$F3  BL   @VPRINT
+       DATA 40*9+0
+       TEXT 'Are you sure?                           '
+       BYTE 0
+*
+DO$F31 BLWP @KSCAN
+       ANDI R0,>5F00
+       CI   R0,'N'*256
+       JEQ  JMPWRM
+       CI   R0,>0D00
+       JEQ  JMPWRM
+       CI   R0,'Y'*256
+       JNE  DO$F31
+       CLR  @LODFLG
+       B    @TILOAD
+*
+DO$F4  AB   @H01,@SPEED
+       CB   @SPEED,@H05
+       JLE  JMPWRM
+       MOVB @H01,@SPEED
+       JMP  JMPWRM
+*
+DO$CR  B    @CALL99
+*
+ROM$PG SETO @ROMPGE      set for rompage     (near CODE4 at end)
+       B    @CALL99
+
+
+GETFIL MOV  R0,R3
+       BL   @VPRINT
+       DATA 40*13+0
+       TEXT 'Press <enter> to load file '
+       BYTE 0
+*
+       LI   R0,>3042
+       MOVB R0,@>8C02
+       SWPB R0
+       MOVB R0,@>8C02
+       LI   R0,'  '
+       LI   R1,400
+LOAD00 MOVB R0,@>8C00
+       DEC  R1
+       JNE  LOAD00
+*
+       MOV  R3,R0             leftover key is passed to GETSTR
+       LI   R1,FILNAM
+       LI   R2,40
+       BL   @GETSTR
+*
+* parse a filename
+*
+       MOVB @>8000,R4
+       MOVB @>8005,@>8000
+       LI   R12,>1EF4
+       SBO  0
+*
+       LI   R0,8
+       LI   R2,NAMLEN
+       MOVB @MAXLE2,*R2
+       CLR  R3
+       XOP  @NINE2,0          parse a potential filename
+       SETO R0
+       JNE  PARS40            parse error, use keyboard input
+       CLR  R0
+*
+PARS40 LI   R12,>1EF4
+       SBZ  0
+       MOVB R4,@>8000
+*
+       MOV  R0,R0
+       JEQ  PARS50
+       B    @ERR#2
+*
+MAXLE2 BYTE 40
+NINE2  DATA 9
+*
+PARS50 LI   R3,FILNAM
+       MOVB @NAMLEN,R4
+       SRL  R4,8
+       A    R3,R4
+       MOVB @H20,*R4          since PARSE doesn't always leave a space
+*
+* parse is over
+*
+*      MOV  R1,R3
+*      MOV  R2,R4
+*
+LOAD01 BL   @VPRINT
+       DATA 40*9+0
+       TEXT 'Loading:                            '
+       BYTE 0
+*
+       BL   @VPRINT
+       DATA 40*13+0
+       TEXT '                          '
+       BYTE 0
+*
+       MOV  R3,R1
+       MOV  R4,R2
+       CB   *R1,@H20          is 1st char a space?
+       JNE  ARG1              no, continue
+       B    @CALL99
+*
+ARG1   MOV  R2,R0
+       S    R1,R0
+       MOV  R0,R10
+       SWPB R0
+       MOVB R0,@NAMLEN
+*
+* CALCULATE LENGTH OF FILENAME (after last period in PATH)
+*
+FLOOP1 CB   *R2,@H20
+       JNE  FJUMP1
+       DEC  R2           CAN'T GO PAST R1, SINCE R1 POINTS AT NON-SPACE
+       JMP  FLOOP1
+*
+FJUMP1 CLR  R3
+       LI   R4,1
+       MOV  R2,R0
+*
+FLOOP2 C    R0,R1
+       JEQ  FOUND
+*
+       CB   *R0,@PERIOD
+       JEQ  FOUNDX
+       DEC  R0
+       INC  R3
+       JMP  FLOOP2
+*
+FOUND  INC  R3
+       DEC  R0
+*
+FOUNDX MOV  R0,R2
+       CI   R3,10
+       JL   FOUNDY
+       JLE  FNDX2
+       B    @WARM
+*
+FNDX2  DEC  R2
+FOUNDY A    R3,R2
+       INC  R2
+       MOVB @H00,@1(R2)
+       MOVB @H00,@2(R2)
+       A    R0,R4
+       S    R1,R4
+       A    R3,R4        R4 HAS OVERALL LENGTH OF NAME
+       SLA  R4,8
+       MOVB R4,@NAMLEN
+       MOV  R2,R5
+       CLR  @LOAD1
+*
+LOOP1  BL   @FILE       ;uses VDP to load file
+       DATA GPLPAB
+       JEQ  ERR#2
+*
+       LI   R0,>0FFA     ;len and location are ignored by MOVE
+       LI   R1,LDFLAG
+       LI   R2,6
+       BLWP @VMBR$
+*
+* MOVE DATA...
+*
+       LI   R12,>1EF0
+       MOVB @WHERE,R1
+       SRL  R1,8
+       JEQ  ERR#2        ACTUALLY, INCORRECT FILE TYPE
+       CI   R1,>0009     figure out the rom/grom location type
+       JL   NOTFIX
+       SBZ  5
+       SBZ  6
+*
+       CI   R1,>000A
+       JL   NOTFIX
+       JEQ  FIX1
+       CI   R1,>000B
+       JNE  ERR#2
+       SBO  4
+       SBO  6
+       JMP  NOTFIX
+*
+ERR#2  BL   @VPRINT
+       DATA 40*9+0
+       TEXT 'Can''t load:                         '
+       BYTE 0
+*
+       BL   @VPRINT
+       DATA 40*13+0
+       TEXT 'Press <enter> to continue '
+       BYTE 0
+*
+ERR#3  BLWP @KSCAN
+       ANDI R0,>FF00
+       CI   R0,>0D00
+       JNE  ERR#3
+       SETO @KEYB             don't process command line again
+       B    @WARM
+*
+FIX1   SBZ  4
+*
+NOTFIX DEC  R1
+       SLA  R1,1
+       MOV  @PAGES(R1),@MOVDAT
+       BL   @MOVE
+MOVDAT DATA 0
+*
+* UPDATE FILENAME
+*
+       CB   @LDFLAG,@HFF
+       JEQ  UPDGR
+*
+       MOV  @KEYB,R0          auto-load from command line?
+       SETO @KEYB             fix to only work on 1st pass
+       JNE  UPDT00
+       B    @CALL99
+*
+UPDT00 B    @WARM
+*
+UPDGR  ABS  @LOAD1
+       JNE  UPD1
+       SETO @LOAD1
+       CI   R3,10
+       JEQ  UPD2
+       AB   @H01,@NAMLEN
+UPD2   MOVB @H30,*R5
+UPD1   AB   @H01,*R5
+*
+       JMP  LOOP1
+*
+
+; Page Map: (see ninerpedia)
+;                                Page        Page
+;   Speed   VidWait  ExtraWait  0000-1fff  8000-9fff
+;   -----   -------  ---------  ---------  ---------
+;     1       x          x         EC          34
+;     2       x          -         33          34
+;     3       x          -         EC          34
+;     4       x          -         33          EE
+;     5       x          -         EC          EE
+;
+; 8.28.2021, MZapf informed me in 2019 that the speed 1 pagemap isn't working
+;            specifically, the 8000 (>34) is not properly set if you select
+;            speed 4 or 5 first. Speed 1 skipped the pagemap configuration.
+
+HBABA  DATA >BABA
+
+CALL99 LIMI 0
+       LI   R12,>1EF0
+       SBZ  7                 ;8.28.2021, default wait states on (/add wait)
+;;     SBO  7
+
+       MOVB @HEC,@UMAP        ;8.28.2021, start with EC at rom
+       MOVB @H34,@UMAP+4      ;8.28.2021, start with slow (>34) at PAD
+
+       CB   @SPEED,@H01
+       JEQ  CALL91            ;was call90 - cleaned up code
+;                                   421
+       SBO  7                 ;turn off wait states for speeds 2-5
+       MOVB @SPEED,R1         ; [-----xyz]
+       SLA  R1,6              ; check 'x' for carry (only set if speed=4 or 5)
+       JNC  CALL80            skip if speed 1,2,3
+       MOVB @HEE,@UMAP+4      speed 4,5 : use EE at PAD (>8000)
+
+;Original faulty code
+;      CB   @SPEED,@H01       time to correct UMAP for system speed
+;      JEQ  CALL90
+;
+;      MOVB @SPEED,R1
+;      MOVB @HEC,@UMAP
+;      MOVB @HEE,@UMAP+4
+;      SLA  R1,6
+;      JOC  CALL80
+;      MOVB @H34,@UMAP+4      ;speed 1,2,3  alas, speed 1 never gets here!
+;
+CALL80 SLA  R1,2              ;speed 1 or 3 or 5  (z is set)?
+       JOC  CALL91            yes,no need to copy rom
+
+       MOVB @H33,@UMAP        set mapper to use page >33 (speed 2 or 4)
+       MOVB @UMAP,@>8000
+       MOVB @>8006,R3
+       MOVB @HEC,@>8006
+       CLR  R0
+       LI   R1,>C000
+       LI   R2,>2000
+CALL81 MOV  *R1+,*R0+    ;move rom code from EC to 33 (EC patched already?)
+       DECT R2
+       JNE  CALL81
+       MOVB R3,@>8006
+;;     JMP  CALL91       ;skip wait state
+;;*
+;;CALL90 SBZ  7            ;add wait state  (speed 1 from call99)
+;;*
+CALL91 SETO @KMODE
+       MOVB @UMAP+4,@>8004    map in the 8000-9fff page
+
+       LI   R2,CODE1
+       LI   R1,>F000
+CALL#1 MOV  *R2+,*R1+    copy code to >f000
+       CI   R2,CODEND
+       JNE  CALL#1
+
+       CLR  R12          Video wait states always on (consider option to change)
+       SBO  25
+CHECK4 B    @>F000       execute CODE1 from F000
+*
+
+; This code is copied into F000
+;
+CODE1  LWPI >F080
+       LI   R0,>8000
+       LI   R1,UMAP-CODE1+>F000    ;sets up the mapper 8 bytes via umap
+CODE2  MOV  *R1+,*R0+
+       CI   R0,>8008
+       JNE  CODE2
+
+       LI   R0,>8040
+CODE3  MOV  *R1+,*R0+
+       CI   R1,CODEND-CODE1+>F000   ;copy from CODE4 to end
+       JNE  CODE3
+       B    @>8040                  ;and execute
+*
+UMAP   DATA >ECED,>BA36,>34EF,>0335
+*
+*                ,>0736
+
+CODE4  LWPI >8100             mirror area
+       MOV  @>8006,R10        save mapper for c000-ffff
+       MOVB @>8007,@>8006     dupe
+
+       LI   R1,>D000          fix memory otherwise affected by 9995 internal ram
+       LI   R2,>F000
+       LI   R0,>0100
+CODE5  MOV  *R1+,*R2+
+       DECT R0
+       JNE  CODE5
+       MOV  R10,@>8006        restore mapper
+*
+       LI   R1,>8300     ;clear scratchPAD ram
+CODE6  CLR  *R1+
+       CI   R1,>8400
+       JNE  CODE6
+*
+; 2-16-2019, ugly ugly - fix this later
+;      1. Save task page 0 to >8100 [below code resets each entry]
+;      2. Check rompage flag and set >BA; use ABS ROMPGE?
+;
+SAVEPAGE0 LI   R1,>00AA       code around line 140 puts the task page zero
+       MOV  R1,@>8100         map address into the MSB of R1, which is then
+       DATA >0201             "LI R1"
+ROMPGE DATA >0000             "DATA"
+       MOV  R1,R1
+       JEQ  NORM              =0? NO ROMPAGE
+       LI   R1,>BA00        ;<>0, page >BA
+       MOVB R1,@>8002       ;loaded into mapper; PEB bus active;master DSR out
+NORM   BLWP @0              reset
+*
+CODEND EQU  $
+*
+FIRST  DATA 0
+*
+VPRINT MOV  *R11+,R0          cpu address
+       AI   R0,>4000
+       SWPB R0
+       MOVB R0,@>8C02
+       SWPB R0
+       MOVB R0,@>8C02
+VPRI00 MOVB *R11+,R0
+       JEQ  VPRI01
+       MOVB R0,@>8C00
+       JMP  VPRI00
+VPRI01 INC  R11               I don't care if it's odd
+       RT
+*
+FILE   MOV  *R11+,R13        ;Replace with xop call? requires virtual task
+       MOV  R11,R14          ;map to remove DSRLNK requirement
+*
+       MOV  R13,R1
+       AI   R1,9              point to pab namelen
+       MOVB *R1+,R2
+       SRL  R2,8
+       LI   R0,440
+       BLWP @VMBW$
+*
+FILEX1 LI   R0,>0500
+       MOV  R13,R1
+       LI   R2,50
+       BLWP @VMBW$
+*
+       MOVB @UMAP+2,@>8002    make sure that dsr is mapped in
+       AI   R0,9
+       MOV  R0,@>8356
+       BLWP @DSR$
+       DATA >0008
+       B    *R14
+*
+; get the target page and byte offset (if Grom)
+;
+MOVE   MOV  *R11+,R1     ;>3801   >3600      example pages
+       MOV  R1,R4        ;>3801   >3600      r4
+       SRL  R4,8         ;>0038   >0036
+       MOVB R1,R4        ;>3838   >3636      r4=16k to simulate wrap
+       ANDI R1,>00FF     ;>0001   >0000      r1=offset
+*
+;
+; This routine moves >2000 bytes regardless of actual size. Historical reason?
+;
+MOVE2  MOV  @>8006,R12
+       MOV  R4,@>8006    ;map same page 2 consecutive banks >c000-ffff
+       LI   R0,>1000     vdp
+       AI   R1,>C000     r1=c000+1 or c000+0
+       LI   R2,>2000     2000 len
+       BLWP @VMBR$       last byte "wraps" because page is mapped twice
+       MOV  R12,@>8006
+       RT
+*
+LDFLAG BYTE 0            ;6 byte header from file load
+WHERE  BYTE 0
+LODCNT DATA 0            ;count of bytes - IGNORED
+LODLOC DATA 0            ;load location  - IGNORED
+*
+*
+KBVEC0 DATA KEYS0        KEYSCAN
+KBVEC1 DATA KEYS1        CHECK BREAK KEY
+KBVEC2 DATA KEYS2        KEY INTERRUPT
+*
+LODFLG DATA 0
+TREGS  BSS  32
+*
+MDMAP  DATA 0,0,0,0           map of MDOS pages we own
+*
+VIDMOD DATA 0
+*
+VDPDAT DATA >8000,>81F0,>8200,>830F          modified 01.12.94 by Tim Tesch
+       DATA >8401,>8508,>8601                set 9938 regs 8-15
+VDPDFB DATA >87F4             2.16.2021, colors set at startup
+       DATA >8888,>8900,>8E00
+       DATA >8B00             reset Sprite attribute table HIGH
+       DATA >8D0F             cause page 0 to be display; no blinking occurs
+       DATA >8A00             reset color table HIGH
+       DATA 0
+
+
+*
+CLRPAG BYTE >36,>37,>3B,>3C,>3D,>3E,>3F
+CLREND EQU  $
+*
+COPPAG DATA >3802,>3000,>0001,>1800          grom0
+       DATA >3903,>2800,>0001,>1800          grom1
+       DATA >3A04,>2000,>0001,>1800          grom2
+       DATA >EC01,>3000,>0000,>2000          rom
+       DATA 0
+*
+H3FFF  DATA >3FFF
+*
+PAGES  DATA >3801,>3901,>3A01,>3B01          WHERE TO LOAD FILES
+       DATA >3C01,>3D01,>3E01,>3F01
+       DATA >3600,>3700,>3600
+*
+PATCHS DATA >0004,>83C0,KEYINT,>83C0,MID,-1  INTERRUPT VECTORS
+       DATA >0020,>0460,BREAK,-1             BREAK CHECK
+       DATA >02B2,>0460,KEYS,-1              KEYSCAN
+       DATA >0A44,C0001,-1
+       DATA >0A7A,>C320,QUITF,>1302,-1       QUIT KEY
+       DATA >0CDA,VWTR,-1                    VECTOR FOR VDPREG
+;
+; 8.28.2021 - This next patch isn't obvious. It is indeed the code that is
+;      moved into ROM at >0308 HOWEVER, all of the references are based on
+;      the Dummy ORG (DORG) set of code directly following. If you change
+;      one, you must change the other!!! (The space being used is for the
+;      99/4a hardware keyboard/joystick scan, which is of no use to the Geneve)
+
+       DATA >0308
+*
+*******************************************************************************8
+*
+       LIMI 0            <keyint>
+       LWPI >83E0
+       CLR  R12          ;vid wait state on
+       SBO  25
+       TB   8            keyboard int
+       JNE  PAT#1
+       MOV  @OLD1,R12
+       B    *R12
+
+PAT#1  LI   R12,KBVEC2   keyboard vector patches
+       JMP  PAT#2
+       LI   R12,KBVEC0
+       JMP  PAT#2
+       LI   R12,KBVEC1
+PAT#2  MOV  @>8004,@MAPSAV
+       MOVB @OLD2+1,@>8005
+       MOV  *R12,R12
+       B    *R12
+
+
+       MOV  @MAPSAV,@>8004       <kbret>
+       DATA >008C             "   LST R12"
+       RT
+       MOV  @MAPSAV,@>8004      <kbret2>
+       B    @>0AB8
+
+       LIMI 0                 <mid>
+       LWPI >83E0
+       LI   R12,>1FDA
+       SBZ  0
+       LWPI >83C0
+       RTWP
+
+       ANDI R2,>0007          <vwtr>
+       CI   R2,1
+       JNE  PAT#3
+       MOVB R11,@>83D4
+PAT#3  SZCB @MASK(R2),R11
+       MOVB R11,*R15
+       ORI  R2,>80
+       MOVB @>83E5,*R15
+       INC  R2
+       B    @>06CA
+; Remember this is in local code space but the labels come from DORG area
+; So take care in how this is referenced
+FAKMSK BYTE >FC,>84,>F0,>00   <mask>  VR0 updated to >F8 with /V flag
+HF8    BYTE >F8,>80,>F8,>00
+*
+       DATA -1                END OF THIS PATCH
+       DATA -1                END OF LIST
+*
+********************************************************************************
+*
+       DORG >0300        ;8.28.2021, DORG mirror of above code! Both must match!
+QUITF  DATA 0            FLAG FOR QUIT KEY
+OLD1   DATA 0
+OLD2   DATA 0
+MAPSAV DATA 0
+*
+KEYINT LIMI 0
+       LWPI >83E0
+       CLR  R12
+       SBO  25
+       TB   8
+       JNE  PAUL2
+       MOV  @OLD1,R12
+       B    *R12
+PAUL2  LI   R12,KBVEC2
+       JMP  CALL#K
+*
+KEYS   LI   R12,KBVEC0
+       JMP  CALL#K
+*
+BREAK  LI   R12,KBVEC1
+*
+CALL#K MOV  @>8004,@MAPSAV
+       MOVB @OLD2+1,@>8005
+       MOV  *R12,R12
+       B    *R12
+*
+KBRET  MOV  @MAPSAV,@>8004
+       DATA >008C             "   LST R12"
+       RT
+KBRET2 MOV  @MAPSAV,@>8004
+       B    @>0AB8
+*
+* MID TRAP
+*
+MID    LIMI 0
+       LWPI >83E0
+       LI   R12,>1FDA
+       SBZ  0
+       LWPI >83C0
+       RTWP
+*
+* R2 LOW HAS REGISTER #, R11 HIGH HAS DATA
+*
+VWTR   ANDI R2,>0007
+C0001  EQU  $+2
+       CI   R2,1
+       JNE  VWTR2
+       MOVB R11,@>83D4
+VWTR2  SZCB @MASK(R2),R11
+       MOVB R11,*R15
+       ORI  R2,>80
+       MOVB @>83E5,*R15
+       INC  R2
+       B    @>06CA
+;                             THIS IS DUMMY CODE. SEE ABOVE!
+MASK   BYTE >FC,>84,>F0,>00   ;3.12.2023, option V enables VR0 mask F8 now
+;MASK   BYTE >F8,>84,>F0,>00   ;VR0 mask FC inhibited 80 columns 10.15.21
+       BYTE >F8,>80,>F8,>00
+*
+       RORG
+*
+H00    BYTE >00
+H01    BYTE >01
+H08    BYTE >08
+H30    BYTE '0'
+H03    BYTE >03
+H04    BYTE >04
+H05    BYTE >05
+H20    BYTE >20
+H33    BYTE >33
+H34    BYTE '4'
+H0F    BYTE >0F
+H10    BYTE >10
+HEC    BYTE >EC
+HEE    BYTE >EE
+SPEED  BYTE >05
+HFF    BYTE >FF
+LOAD1  DATA 0
+KEYB   DATA 0
+GPLPAB DATA >0500,>0FFA,>0000,>200A
+       BYTE 0
+NAMLEN BYTE 0
+FILNAM TEXT '                                        '
+       TEXT '   '
+*
+PERIOD BYTE '.'
+*
+       EVEN
+       LIST
+       END

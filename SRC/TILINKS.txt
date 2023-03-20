@@ -1,0 +1,1149 @@
+*
+* special linker for ti gpl loader...
+*
+       UNL
+*
+* LINK <filename>
+*
+* display version
+* get pages
+* get filename
+* if none, set input=keyboard
+* initialize loader  <rorg, ref/def table>
+* getcmd
+*    1) if file read line from file
+*          if line exists, goto parse command
+*    2) read keyboard line
+* parsecmd
+*    1) object file : load it
+*                      if load error, switch to keyboard : goto getcmd
+*
+*    2) save file   : check ref/def
+*                       if unresolved refs, list them
+*                          and switch to keyboard : goto getcmd
+*      print stats
+*      save file
+*
+*    3) ref list: list ref/def table to screen
+*
+       RORG
+*
+* display version number
+*
+*      CLR  R0
+*      LI   R1,0              text 40
+*      XOP  @SIX,0       set text mode
+*      LI   R0,>25
+*      CLR  R1
+*      CLR  R2
+*      CLR  R3
+*      CLR  R4
+*      CLR  R5
+*      XOP  @SIX,0       set margins
+*
+       BL   @MESG1
+       BYTE >0D,>0A
+       TEXT 'TI-LINK version 1.0'
+       BYTE >0D,>0A,>0A
+       TEXT '(C) COPYRIGHT 1987 Paul Charlton'
+       BYTE >0D,>0A
+       TEXT 'ALL RIGHTS RESERVED'
+       BYTE >0D,>0A,>0A,0
+*
+       MOV  @CTLC,@>00FE      break routine address
+*
+* get 8 pages for object files, 2 pages for REF/DEF
+*
+       LI   R0,1
+       LI   R1,10
+       LI   R2,1
+       CLR  R3
+       XOP  @SEVEN,0
+       MOV  R0,R0
+       JEQ  GETMAP
+*
+       BL   @MESG1
+       TEXT '--Insufficient Memory, aborting LINK--'
+       BYTE >0D,>0A,0
+*
+       BLWP @0
+*
+CTLC   DATA $+2
+       LI   R0,PAB
+       MOVB @H01,*R0
+       XOP  @EIGHT,0
+*
+       BL   @MESG1
+       TEXT '^C'
+       BYTE >0D,>0A,0
+       BLWP @0                abort the linker
+*
+GETMAP LI   R0,4
+       LI   R1,PAGLST
+       LI   R2,11
+       XOP  @SEVEN,0          get list of our pages
+       MOVB @PAGLST+1,@>F111  map in the ref/def table memory
+       MOVB @PAGLST+2,@>F112
+*
+       MOVB @MAPPAG,@MAPPAG+5   for TILINKing...
+       MOVB @MAPPAG+1,@MAPPAG+6
+*
+* get filename from command line
+*
+       LI   R1,CMDARG
+       MOVB @MAXLEN,@-1(R1)
+*
+*      convert command args into string
+*
+*      IN:  R1 points to string buffer (byte after length byte)
+*           length byte must have max length of buffer
+*
+CMDSTR MOV  @>0128,R2         get pointer to command string
+       JEQ  NO#STR            zero length string
+       CB   @2(R2),@-1(R1)    compare lengths of strings
+       JL   LENOK             string too long for the buffer
+       MOVB @-1(R1),@2(R2)    just fill the buffer anyway
+*
+LENOK  MOV  R1,R5             cursor to caller's string buffer
+       DEC  R5
+       MOVB @2(R2),R6         count of chars to move
+       SRL  R6,8
+       INCT R6
+*
+NXTNOD MOV  R2,R3             cursor within node
+       INCT R3
+       MOV  R2,R4
+       AI   R4,8              pointer to end of node
+*
+NODL1  MOVB *R3+,*R5+
+       DEC  R6
+       JEQ  NODJ1
+       C    R3,R4
+       JL   NODL1
+       MOV  *R2,R2            this link never zero if valid string
+       JMP  NXTNOD
+*
+NODJ1  CLR  R0
+       JMP  NODRET
+*
+NO#STR CLR  R0
+       MOVB R0,@-1(R1)
+       MOVB R0,*R1
+       JMP  NODRET
+*
+NODRET CLR  @KEYB             assume file input for now
+       MOVB @-1(R1),R0
+       JNE  PARSEN
+DOKEYB SETO @KEYB
+       JMP  INITL             now to initialize the loader
+*
+PARSEN LI   R0,8
+       LI   R2,PABLEN
+       MOVB @MAXLEN,*R2
+       CLR  R3
+       XOP  @NINE,0           parse a potential filename
+       JNE  DOKEYB            parse error, use keyboard input
+*
+       LI   R0,PAB
+       MOVB @H00,*R0          open the file
+       XOP  @EIGHT,0
+       MOVB @PAB+2,R1
+       JNE  DOKEYB            error opening file, use keyboard input
+*
+* initialize the loader --- reset RORG address, clear REF/DEF table
+*
+INITL  MOV  @H0400,@LOWEST
+       MOV  @HIREF,@REFPTR
+*
+* getcmd --- read line from keyboard or from file
+*
+GETCMD MOV  @KEYB,R0
+       JNE  GETKB
+*
+       LI   R0,PAB
+       MOVB @H02,*R0
+       XOP  @EIGHT,0          read line from file
+       MOVB @PAB+2,R1
+       JEQ  GOTCMD            read a command successfully
+*
+GETKB  BL   @MESG1
+       BYTE ']',0
+*
+       MOV  @PAB+4,R1
+       LI   R2,38             max length for keyboard input
+       BL   @GETSTR
+       MOVB @-1(R1),R0
+       SRL  R0,8
+       MOV  R0,@PAB+12        save record length from keyboard input
+*
+GOTCMD MOV  @PAB+4,R1         string to parse
+       MOV  @PAB+12,R2
+       MOV  R1,R3
+       A    R2,R3
+       MOVB @H00,*R3
+*
+       CB   *R1,@SAVCMD
+       JEQ  DOSAVE            it's a save command
+       CB   *R1,@REFLST
+       JEQ  LSTRCH            it's a list command
+       CB   *R1,@DONCMD
+       JNE  LODOBJ
+       LI   R0,PAB
+       MOVB @H01,*R0
+       XOP  @EIGHT,0          close the command file
+       BLWP @0
+*
+LSTRCH B    @LSTREF
+*
+* must be an object filename if here...
+*
+LODOBJ LI   R0,8
+       LI   R2,OBJLEN
+       MOVB @MAXLEN,*R2
+       CLR  R3
+       XOP  @NINE,0           parse the filename
+       JNE  BADOBJ            bad object filename
+*
+       BLWP @LOADER           try loading object file
+       JNE  GETCMD            loaded ok, now for next command
+       JMP  BADOB1
+*
+BADOBJ SETO R0
+BADOB1 SRA  R0,8
+       SLA  R0,1
+       MOV  R0,R1
+       MOV  @MTABLE(R1),R1
+BAB000 MOVB *R1+,R0
+       JEQ  BAB001
+       BLWP @EMIT1
+       JMP  BAB000
+*
+BAB001 BL   @CRLF
+       SETO @KEYB             switch to keyboard
+       JMP  GETCMD
+*
+DOSAVE MOV  @REFPTR,R2
+DS0000 CI   R2,>6000
+       JHE  DS0010
+       MOV  *R2,R3
+       JLT  DS0001
+       AI   R2,8
+       JMP  DS0000
+DS0001 LI   R0,>0D00
+       JMP  BADOB1
+*
+DS0010 LI   R0,8
+       INC  R1
+       LI   R2,SAVLEN
+       MOVB @MAXLEN,*R2
+       CLR  R3
+       XOP  @NINE,0           parse output filename
+       JNE  BADOBJ            bad output filename
+*
+       LI   R8,>0400          first
+       MOV  @LOWEST,R7        last
+       AI   R7,->A000         special offset @@
+*
+NEXT00 MOV  R7,R3
+       S    R8,R3             length
+       LI   R1,HEAD1          assume that this is last
+       CI   R3,>1FFA
+       JLE  NEXT01
+*
+       LI   R3,>1FFA          max to save this time
+       LI   R1,HEAD2          correct our assumption
+NEXT01 MOV  R3,@2(R1)         length
+       MOV  R8,@4(R1)         address
+       SOC  @H0001,@4(R1)     protection flag...
+*
+* add protection to the file...
+*
+       LWPI >F040             emitws
+       MOV  @>F010,R1         saving address
+       MOV  @>F006,R2         saving length
+       INC  R2
+       ANDI R2,>FFFE
+       MOV  R1,R3
+       MOV  R3,R4
+       ANDI R3,>1FFE
+       AI   R3,>A000
+       SRL  R4,13
+       MOVB @MAPPAG(R4),@>F115
+       MOVB @MAPPAG+1(R4),@>F116
+*
+       LI   R5,>A006
+NEXT02 MOV  *R3,R6
+       XOR  R5,R6
+       SRC  R6,5
+       INV  R6
+       MOV  R6,*R3+
+       INCT R5
+       DECT R2
+       JNE  NEXT02
+       LWPI >F000
+*
+* the data is now protected
+*
+       MOV  R8,R4
+       AI   R4,-6
+       MOV  R4,R5
+       SRL  R4,13
+       ANDI R5,>1FFF
+       AI   R5,>A000
+       MOVB @MAPPAG(R4),@>F115
+       MOVB @MAPPAG+1(R4),@>F116
+*
+       MOVB *R1+,*R5+
+       MOVB *R1+,*R5+
+       MOVB *R1+,*R5+
+       MOVB *R1+,*R5+
+       MOVB *R1+,*R5+
+       MOVB *R1+,*R5+
+*
+       MOV  R3,R2
+       AI   R2,6              length of this pgm image
+       MOV  R2,@SAVPAB+12
+*
+       MOV  R8,R4
+       CLR  R5
+       AI   R4,>5FFA
+       JNC  SAV000
+       INC  R5
+SAV000 MOV  R5,@SAVPAB+2
+       MOV  R4,@SAVPAB+4
+       LI   R0,SAVPAB
+       XOP  @EIGHT,0          save the pgm image
+       CLR  R0
+       MOVB @SAVPAB+2,R0
+       SRL  R0,5
+       JNE  REACHB
+*
+       MOVB @SAVLEN,R0
+       SRL  R0,8
+       AI   R0,SAVLEN
+       AB   @H01,*R0          increment filename
+*
+       A    R3,R8             next start address
+       C    R8,R7
+       JL   NEXT00
+*
+       B    @INITL            finished saving the files
+REACHB B    @BADOB1
+*
+********************************************************************************
+*
+* list out the REFs
+*
+LSTREF BL   @CRLF
+*
+*      NOW BEGIN PRINTING DEF LIST
+*      NOW INIT THE TABLE POINTER
+*
+       MOV  @REFPTR,R3                       init pointer to table
+CONVM1 CI   R3,PREDEF                        are we through?
+       JHE  CONVM2                           yes
+       MOV  *R3,R4                           no, so get start of name
+       JGT  CONVM7                           is it def?
+       NEG  *R3                              undefined
+CONVM7 LI   R2,6
+CONV10 MOVB *R3+,R0                          move at a character one at a time
+       BLWP @EMIT1
+       DEC  R2
+       JNE  CONV10
+       LI   R0,'  '                          put out a blank
+       BLWP @EMIT1
+       MOV  R4,R4                            an asterick? for undefined
+       JGT  CONVM8
+       NEG  @-6(R3)
+       MOVB @ASTRK,R0
+CONVM8 BLWP @EMIT1
+       MOV  *R3+,R2                          now do the address part
+       MOV  R2,R4                            save it for now
+       SRL  R4,4
+       BL   @CONV
+       MOV  R2,R4
+       BL   @CONV
+       MOV  R2,R4
+       SLA  R4,4
+       BL   @CONV
+       MOV  R2,R4
+       SWPB R4
+       BL   @CONV
+       LI   R4,8
+       LI   R0,'  '
+CONVM  BLWP @EMIT1
+       DEC  R4
+       JNE  CONVM
+       JMP  CONVM1
+*
+* NOW JUST DO A CR LF
+*
+CONVM2 BL   @CRLF
+       B    @GETCMD
+*
+CRLF   LI   R0,>0D0A          carriage return
+       BLWP @EMIT1            output to screen
+       SWPB R0                line feed
+       BLWP @EMIT1
+       RT
+*
+CONV   ANDI R4,>0F00
+       AI   R4,>3000
+       CI   R4,>3A00
+       JL   CONV1
+       AI   R4,>0700
+CONV1  MOVB R4,R0
+       BLWP @EMIT1
+       RT
+ASTRK  TEXT '*'
+*
+* MESG
+*
+MESG1  MOVB *R11+,R0
+       JEQ  MESG10
+       BLWP @EMIT1
+       JMP  MESG1
+*
+MESG10 INC  R11               we don't care if r11 is odd
+       RT
+*
+CTLP   EQU  >00FA
+CTLS   EQU  >00FC
+*
+EMIT1  DATA >F040,EMIT
+*
+EMIT   LIMI 2
+       MOV  @CTLS,R0
+       JNE  EMIT              spin, spin, spin!
+*
+       LI   R0,>27
+       LI   R1,>F046
+       CLR  *R1
+       MOVB *R13,*R1
+       CLR  R2
+       XOP  @SIX,0
+*
+EMIT30 MOV  @EMITF,R0
+       JNE  EMIT10            no echo flag is on (cursor blink)
+*
+       MOVB *R13,@PRNBUF      buffer for printer & file redirection
+*
+       MOV  @CTLP,R0
+       JEQ  EMIT10
+*
+* printer echo goes here!
+*
+       LI   R0,PRNPAB
+       XOP  @EIGHT,0          should we check for errors?
+*
+EMIT10 RTWP
+*
+PRNPAB DATA >0302             DISPLAY,FIXED 1
+       DATA >0000
+       DATA PRNBUF
+       DATA 0,1,0,1
+       BYTE 0
+       BYTE 3
+       TEXT 'PIO'
+PRNBUF BYTE 0
+*
+EMITF  DATA 0
+*
+* the world famous GETSTR ...
+*
+FIRST  EQU  1
+LAST   EQU  2
+CURREN EQU  3
+HIDDEN EQU  4
+SAVE   EQU  5
+*
+*
+*     R0---CURRENT CHARACTER
+*     R1---POINTER TO BUFFER START
+*     R2---MAXLEN (MUST BE >= 1 )
+*     R3---MAX ADDRESS POINTER
+*     R4---ADDRESS POINTER
+*
+GETSTR MOV  R2,R2
+       JNE  GETJ1
+       RT                SHOULD REPORT AN ERROR!
+*
+GETJ1  CLR  @IMODE
+       A    FIRST,R2
+GETSET MOV  FIRST,CURREN
+       MOV  FIRST,HIDDEN
+*
+LOOPY  MOVB *CURREN,@CURCHR
+       C    CURREN,HIDDEN
+       JL   LOOPY2
+       MOVB @H20,@CURCHR
+*
+LOOPY2 CLR  R0
+       BLWP @KSCAN
+       CI   R0,>FF00
+       JEQ  LOOPY2
+*
+       CI   R0,>2000
+       JLT  GETCTL
+       CI   R0,>7E00
+       JGT  GETCTL
+*
+* TYPE OUT THE CURRENT CHARACTER
+*
+       MOVB R0,@JUNK00
+       MOV  @IMODE,@IMODE
+       JEQ  TYPE
+       B    @GETINS
+*
+TYPE   MOVB @JUNK00,R0
+       MOVB R0,*CURREN+
+       BLWP @EMIT1
+*
+ENDCHK C    CURREN,HIDDEN
+       JLE  TYPE1
+       MOV  CURREN,HIDDEN
+*
+TYPE1  C    CURREN,LAST
+       JL   LOOPY
+       DEC  CURREN
+       LI   R0,>0800
+GETSE1 BLWP @EMIT1
+       JMP  LOOPY
+*
+GETCTL CI   R0,>8900          (FS)
+       JEQ  GETFS
+       CI   R0,>8800          (BS)
+       JEQ  GETBS
+       CI   R0,>8700          (ERASE)
+       JEQ  ERAS1
+       CI   R0,>8300          (DELETE)
+       JEQ  GETDEL
+       CI   R0,>8400          (INSERT)
+       JEQ  TOGINS
+       CI   R0,>0900          (SHOW LINE)
+       JEQ  SHOWJ0
+       CI   R0,>0D00          (ENTER)
+       JNE  LOOPY
+       B    @GETRET
+SHOWJ0 B    @SHOW
+*
+************************************************************
+*
+GETFS  MOVB *CURREN+,R0
+       BLWP @EMIT1
+       JMP  ENDCHK
+*
+************************************************************
+*
+GETBS  C    CURREN,FIRST
+       JEQ  LOOPY
+*
+GETBS1 DEC  CURREN
+       LI   R0,>0800
+       JMP  GETSE1
+*
+************************************************************
+*
+ERAS1  LI   R0,>0800
+ERAS1A C    CURREN,FIRST
+       JEQ  ERAS2
+       BLWP @EMIT1
+       DEC  CURREN
+       JMP  ERAS1A
+*
+ERAS2  LI   R0,' '*256
+*
+ERASL1 BLWP @EMIT1
+       MOVB R0,*CURREN+
+       C    CURREN,HIDDEN
+       JLE  ERASL1
+*
+       LI   R0,>0800
+ERASL2 BLWP @EMIT1
+       DEC  CURREN
+       C    CURREN,FIRST
+       JH   ERASL2
+       B    @GETSET
+*
+************************************************************
+*
+GETDEL C    CURREN,HIDDEN
+       JL   GETDL0
+       B    @LOOPY
+*
+GETDL0 MOV  CURREN,SAVE
+*
+GETDL1 INC  CURREN
+       C    CURREN,HIDDEN
+       JHE  GETDJ1
+*
+       MOVB *CURREN,@-1(CURREN)
+       MOVB *CURREN,R0
+       BLWP @EMIT1
+       JMP  GETDL1
+*
+GETDJ1 C    CURREN,HIDDEN
+       JH   GETDJ2
+*
+       MOVB *CURREN,@-1(CURREN)
+       LI   R0,' '*256
+       BLWP @EMIT1
+       INC  CURREN
+       JMP  GETDJ1
+*
+GETDJ2 BLWP @EMIT1
+*
+       LI   R0,>0800
+GETDL2 BLWP @EMIT1
+       DEC  CURREN
+       C    CURREN,SAVE
+       JH   GETDL2
+*
+       DEC  HIDDEN
+       B    @LOOPY
+*
+************************************************************
+*
+IMODE  DATA 0
+TOGINS INV  @IMODE
+       B    @LOOPY
+*
+GETINS LI   R0,>2000
+       BLWP @EMIT1
+       MOV  CURREN,SAVE
+*
+GETIL1 C    CURREN,HIDDEN
+       JHE  GETIJ1
+       MOVB *CURREN,R0
+       BLWP @EMIT1
+       INC  CURREN
+       JMP  GETIL1
+*
+GETIJ1 LI   R0,>0800
+       BLWP @EMIT1
+*
+       C    CURREN,SAVE
+       JEQ  GETIJ2
+       DEC  CURREN
+       JMP  GETIJ1
+*
+GETIJ2 MOV  LAST,CURREN
+*
+GETIL2 MOVB @-1(CURREN),*CURREN
+       C    CURREN,SAVE
+       JLE  GETIJ3
+       DEC  CURREN
+       JMP  GETIL2
+*
+GETIJ3 MOVB @H20,*CURREN
+       C    HIDDEN,LAST
+       JHE  GETIJ4
+       INC  HIDDEN
+GETIJ4 B    @TYPE
+*
+************************************************************
+*
+SHOW   MOV  LAST,HIDDEN
+*
+SHOWL1 C    HIDDEN,CURREN
+       JLE  SHOWJ1
+*
+       CB   *HIDDEN,@H20
+       JNE  SHOWJ1
+       DEC  HIDDEN
+       JMP  SHOWL1
+*
+SHOWJ1 C    HIDDEN,FIRST
+       JLE  SHOWN
+*
+       INC  HIDDEN
+*
+SHOWL2 C    CURREN,HIDDEN
+       JHE  SHOWJ2
+*
+       MOVB *CURREN+,R0
+       BLWP @EMIT1
+       JMP  SHOWL2
+*
+SHOWJ2 C    CURREN,LAST
+       JLE  SHOWN
+*
+       DEC  CURREN
+       LI   R0,>0800
+       BLWP @EMIT1
+*
+SHOWN  B    @LOOPY
+*
+************************************************************
+*
+GETRET MOV  @H20,@FIXCHR      marker for end of string
+GETCT2 MOV  HIDDEN,R0
+GETR2  C    HIDDEN,LAST
+       JH   DONE
+*
+       MOVB @H20,*HIDDEN+
+       JMP  GETR2
+*
+DONE   MOV  R0,HIDDEN         restore the pointer
+       MOVB @H00,*R0
+       MOV  R0,R3
+*
+       S    R1,R0
+       SLA  R0,8
+       MOVB R0,@-1(R1)
+*
+DONE2  MOVB @FIXCHR,*R3
+DONE3  B    @CRLF
+*
+JUNK00 BYTE 0
+H04    BYTE >04
+HFF    BYTE >FF
+CURCHR BYTE 0
+UNDLIN BYTE '_'
+*
+KSCAN  DATA >F060,$+2
+*
+KLA    SETO @EMITF            no echo to printer right now!
+       MOVB @UNDLIN,R0
+       BLWP @EMIT1
+       LI   R0,>0800
+       BLWP @EMIT1
+*
+       LI   R4,500
+KL     LI   R0,>0004
+       XOP  @FIVE,0
+       JEQ  KEXIT
+       DEC  R4
+       JNE  KL
+*
+       MOVB @CURCHR,R0
+       BLWP @EMIT1
+       LI   R0,>0800
+       BLWP @EMIT1
+       LI   R4,700
+KL2    LI   R0,4
+       XOP  @FIVE,0
+       JEQ  KEXIT
+       DEC  R4
+       JNE  KL2
+       JMP  KLA
+*
+KEXIT  MOVB @CURCHR,R0
+       BLWP @EMIT1
+       LI   R0,>0800
+       BLWP @EMIT1
+       CLR  @EMITF            turn echo on again
+       MOVB R1,*R13
+       RTWP
+*
+FIXCHR BYTE 0
+*
+       BYTE 0                 this is the length for zapdat
+ZAPDAT BYTE 0
+*
+********************************************************************************
+ERRMO  EQU  8*256        MEMORY OVERFLOW
+ERRTAG EQU  10*256
+ERRCS  EQU  11*256
+ERRDDF EQU  12*256
+ERRURR EQU  13*256
+*
+* MAIN PROGRAM SEG
+*
+*
+LDRWS  EQU  >F020
+LOADER DATA LDRWS,LDENTR
+LR0LB  EQU  LDRWS+1
+LR3LB  EQU  LDRWS+7
+*
+LDENTR SZCB @H20,R15
+       LI   R0,OBJPAB
+       MOVB @H00,*R0
+       XOP  @EIGHT,0          open the object file
+       MOVB @PAB+2,R7
+       JNE  LDERR
+*
+       MOV  @LOWEST,R7        default load address
+       MOV  R7,R5
+       CLR  R12
+       BL   @GETREC
+       CI   R3,1
+       JNE  DCD
+       INC  R12
+       CLR  R3
+       JMP  COMP
+*
+* TAG PROC
+*
+JUMP   EQU  $
+CHKF   CI   R3,'F'       END OF RECORD
+       JNE  DCD
+TAGF   CLR  R2
+NXTTAG EQU  $
+TAG8   BL   @GETBYT
+       CI   R3,':'       END OF FILE
+       JNE  CHKF
+*
+* END OF LOAD OPERATION--- close file
+*
+       LI   R0,OBJPAB
+       MOVB @H01,*R0
+       XOP  @EIGHT,0          close the object file
+       JMP  LDRTN
+*
+LDERR  MOVB R0,*R13
+       SOCB @H20,R15
+LDRTN  RTWP
+
+DCD    BL   @DECODE
+COMP   CLR  R4
+       MOVB @TAGTBL(R3),R4
+       SRL  R4,7
+       MOV  R8,@CHKSAV
+       BL   @DCDF1
+       B    @JUMP(R4)
+* PSEG
+TAG0   MOV  @LOWEST,R5
+       INC  R0
+       ANDI R0,>FFFE
+       A    R0,@LOWEST
+SETPC  MOV  R5,R7
+
+TAGI   LI   R9,8
+SKIP   BL   @GETBYT
+       DEC  R9
+       JNE  SKIP
+       JMP  NXTTAG
+MEMOVF LI   R0,ERRMO
+       JMP  LDERR
+*
+* CHECK THE CHECKSUM
+*
+TAG7   A    R0,@CHKSAV
+       JEQ  NXTTAG
+       LI   R0,ERRCS
+       JMP  LDERR
+TAGA   A    R5,R0
+TAG9   MOV  R0,R7
+       JMP  NXTTAG
+TAGC   A    R5,R0
+TAGB   MOV  R7,R11
+       SRL  R11,13
+       MOVB @MAPPAG(R11),@>F115
+       MOV  R7,R11
+       ANDI R11,>1FFF
+       MOVB R0,@>A000(R11)
+       INC  R7
+*
+       MOV  R7,R11
+       SRL  R11,13
+       MOVB @MAPPAG(R11),@>F115
+       MOV  R7,R11
+       ANDI R11,>1FFF
+       MOVB @LR0LB,@>A000(R11)
+       INC  R7
+       JMP  NXTTAG
+*
+TAG3   A    R5,R0
+
+TAG4   BL   @PUSH
+       MOV  R0,R0
+       JEQ  DLTREF
+
+NXTDEF AI   R6,-8
+       C    R6,R4
+       JH   NXTDE3
+       NEG  *R4
+NXTTG2 JMP  NXTTAG
+NXTDE3 C    *R4,*R6
+       JNE  NXTDEF
+       C    @2(R4),@2(R6)
+       JNE  NXTDEF
+       C    @4(R4),@4(R6)
+       JNE  NXTDEF
+       MOV  @6(R6),R3
+
+
+RESREF MOV  R0,R11
+       SRL  R11,13
+       MOVB @MAPPAG(R11),@>F115
+       MOV  R0,R11
+       ANDI R11,>1FFE
+       MOV  @>A000(R11),R9
+       MOV  R3,@>A000(R11)
+       MOV  R9,R0
+       JNE  RESREF
+DLTREF AI   R4,8
+       MOV  R4,@REFPTR
+       JMP  NXTTG2
+TAG1
+TAG2
+TAGD
+TAGE
+TAGG
+TAGH   JMP  BADTAG
+*
+TAG5   A    R5,R0
+
+TAG6   BL   @PUSH
+
+NXTENT AI   R6,-8
+NXTEN2 C    R6,R4
+       JEQ  NXTTG2
+       MOV  *R6,R10
+       JGT  NXTEN3
+       NEG  R10
+NXTEN3 C    *R4,R10
+       JNE  NXTENT
+       C    @2(R4),@2(R6)
+       JNE  NXTENT
+       C    @4(R4),@4(R6)
+       JNE  NXTENT
+       MOV  *R6,R10
+       JGT  DDFERR
+* RESOLVE THE REF
+       MOV  @6(R6),R3
+RESRF2 MOV  R3,R11
+       SRL  R11,13
+       MOVB @MAPPAG(R11),@>F115
+       MOV  R3,R11
+       ANDI R11,>1FFE
+       MOV  @>A000(R11),R9
+       MOV  R0,@>A000(R11)
+       MOV  R9,R3
+       JNE  RESRF2
+       MOV  R6,R9
+       S    R4,R9
+       MOV  R6,R10
+       AI   R10,8
+       MOV  R6,R3
+DELREF DECT R3
+       DECT R10
+       MOV  *R3,*R10
+       DECT R9
+       JNE  DELREF
+       AI   R4,8
+       MOV  R4,@REFPTR
+       JMP  NXTEN2
+
+DDFERR MOV  R4,@2(R13)
+       LI   R0,ERRDDF
+       B    @LDERR
+MOVFER B    @MEMOVF
+
+PUSH   MOV  R11,R10
+       LI   R9,6
+       MOV  @REFPTR,R6
+       AI   R6,-8
+       MOV  R6,R4
+       CI   R6,LSTPGM
+       JL   MOVFER
+       MOV  R6,@REFPTR
+DEFENT BL   @GETBYT
+       MOVB @LR3LB,*R6+
+       DEC  R9
+       JNE  DEFENT
+       MOV  R0,*R6
+       LI   R6,>6000
+       B    *R10
+
+DCDF1  MOV  R11,R10
+       CLR  R0
+       MOV  R12,R12
+       JEQ  CMPRS
+       BL   @GETBYT
+       MOVB @LR3LB,R0
+       BL   @GETBYT
+       A    R3,R0
+       B    *R10
+
+CMPRS  LI   R9,4
+CMPRS2 BL   @GETBYT
+       BL   @DECODE
+       SLA  R0,4
+       A    R3,R0
+       DEC  R9
+       JNE  CMPRS2
+       B    *R10
+
+DECODE AI   R3,-'0'
+       CI   R3,>A
+       JL   DECRTN
+       AI   R3,-7
+       CI   R3,'I'-'0'
+       JH   BADTAG
+DECRTN RT
+* ILLEGAL TAGS
+BADTAG LI   R0,ERRTAG
+       B    @LDERR
+*
+* READ A RECORD FROM THE FILE
+*
+GETREC LI   R0,OBJPAB
+       MOVB @H02,*R0
+       XOP  @EIGHT,0
+       CLR  R0
+       MOVB @OBJPAB+2,R0
+       SRL  R0,5
+       JNE  GIOER2
+*
+       LI   R1,RECORD
+       MOV  @OBJPAB+12,R2     char count for this record
+       CLR  R8
+GETBYT DEC  R2
+       JLT  GETREC
+       MOVB *R1+,R3
+       SRL  R3,8
+       A    R3,R8
+       RT
+*
+GIOER2 B    @LDERR
+*
+* CHECK DEF/REF STACK
+*
+CHKREF LI   R1,PREDEF+8
+CHKRF2 AI   R1,-8
+       MOV  *R1,R0
+       JLT  URRERR
+       C    @REFPTR,R1
+       JNE  CHKRF2
+       INCT R11
+       RT
+URRERR LI   R0,ERRURR
+       RT
+* TAG TABLE
+TAGTBL BYTE TAG0-JUMP/2
+       BYTE TAG1-JUMP/2
+       BYTE TAG2-JUMP/2
+       BYTE TAG3-JUMP/2
+       BYTE TAG4-JUMP/2
+       BYTE TAG5-JUMP/2
+       BYTE TAG6-JUMP/2
+       BYTE TAG7-JUMP/2
+       BYTE TAG8-JUMP/2
+       BYTE TAG9-JUMP/2
+       BYTE TAGA-JUMP/2
+       BYTE TAGB-JUMP/2
+       BYTE TAGC-JUMP/2
+       BYTE TAGD-JUMP/2
+       BYTE TAGE-JUMP/2
+       BYTE TAGF-JUMP/2
+       BYTE TAGG-JUMP/2
+       BYTE TAGH-JUMP/2
+       BYTE TAGI-JUMP/2
+       BYTE 0
+*
+PAB    DATA >0014,>0000
+       DATA CMDARG,>0000
+       DATA 80,0
+       DATA 0
+       BYTE 0
+PABLEN BYTE 0
+PABNAM TEXT 'WPGOKWEGPOKEWRGOPKERH;ERGFH;LKSFDHL;KSDF'
+       DATA 0
+*
+OBJPAB DATA >0004,>0000
+       DATA RECORD,>0000
+       DATA 80,0
+       DATA 0
+       BYTE 0
+OBJLEN BYTE 0
+OBJNAM TEXT 'WEGPOKQEWRG;678QERH;GLKDFBV,MERPOHQEROPH'
+       DATA 0
+*
+SAVPAB DATA >0600,0,0,0,0,0
+       DATA 0
+       BYTE 0
+SAVLEN BYTE 0
+SAVNAM TEXT 'QERG,ERV0-I2TLM3QW49UVBLDSKJV9803UG4LKSS'
+       DATA 0
+*
+       DATA 0
+CMDARG TEXT '90I-321RKMLVQ907832TKLMVQRE90UG3QLKJG098'
+       DATA 0
+*
+RECORD TEXT 'QWG0-8932TKMV8YU234IOJ43QGILJREGOIJGREOI'
+       TEXT 'QWEGLKQREGK;BPOJIERBOPKREHP]OKRQEHOPKPOK'
+       DATA 0
+*
+PREDEF EQU  >6000
+*
+PAGLST BYTE 0,0,0
+MAPPAG BYTE 0,0,0,0,0,0,0,0
+*
+CHKSAV DATA 0                 current checksum
+LOWEST DATA >0400             current RORG address
+REFPTR DATA >4000
+*
+H0001  DATA >0001
+FIVE   DATA 5
+SIX    DATA 6
+SEVEN  DATA 7
+EIGHT  DATA 8
+NINE   DATA 9
+*
+H00    BYTE >00               open file
+H01    BYTE >01               close file
+H02    BYTE >02               read a record
+H06    BYTE >06               save PGM image
+H20    BYTE >20
+MAXLEN BYTE 40
+SAVCMD BYTE '@'
+REFLST BYTE '?'
+DONCMD BYTE '!'
+*
+       DATA MM1
+MTABLE DATA M0,M1,M2,M3,M4,M5
+       DATA M6,M7,M8,M9,MA,MB
+       DATA MC,MD
+*
+MM1    TEXT 'Bad filename'
+       BYTE 0
+M0     TEXT 'Bad devicename'
+       BYTE 0
+M1     TEXT 'Write protected device'
+       BYTE 0
+M2     TEXT 'Bad file attributes'
+       BYTE 0
+M3     TEXT 'Bad filename'
+       BYTE 0
+M4     TEXT 'Device buffer full'
+       BYTE 0
+M5     TEXT 'EOF error'
+       BYTE 0
+M6     TEXT 'Device error'
+       BYTE 0
+M7     TEXT 'File not found'
+       BYTE 0
+M8     TEXT 'Memory full'
+       BYTE 0
+M9     TEXT 'Unknown error'
+       BYTE 0
+MA     TEXT 'Bad TAG'
+       BYTE 0
+MB     TEXT 'Invalid checksum'
+       BYTE 0
+MC     TEXT 'Duplicate definition'
+       BYTE 0
+MD     TEXT 'Unresolved reference'
+       BYTE 0
+*
+       EVEN
+HEAD1  BYTE 'P','F'
+LEN1   DATA 0
+ADR1   DATA 0
+*
+HEAD2  BYTE 'P','F'
+LEN2   DATA 0
+ADR2   DATA 0
+*
+KEYB   DATA 0
+H0400  DATA >0400
+HIREF  DATA PREDEF
+*
+LSTPGM EQU $
+*
+       LIST
+*
+       END
+*

@@ -1,0 +1,74 @@
+File:       A-RESTRICT
+Programs:   Source code the GPL/TIMODE Interpreter, for the Geneve 9640
+Version:    7.40 compiled 12 March 2023
+Copyright:  (c)1994-2023 by 9640News and Contributors
+Contact:    InsaneMultitasker or 9640News, at AtariAge.com
+=====================================================================
+
+GPL is a TIMODE (/4A) interpreter that allows the Geneve to emulate
+most functionality of the /4A.  This includes running 'dumped' cartridge
+files (in GRAM Kracker format) and existing /4a software.
+
+ASSEMBLY AND LINKAGE:
+---------------------
+GPL is assembled with GenASM and linked with a special linker (TILINK) included
+with this package. Makefile has been implemented for this release.
+
+       ASM/N     - GenASM; not included in this package
+       !DOIT     - created by make process
+       !LINKGPL  - control file for linker
+       !MAKEFILE - Make control file
+       $MAKE     - Updated to work with 20xx years and TIPI no creationdate
+       MAKE      - Batch file to start the make process
+       TESTG     - Simple batch to start GPL
+       TIM2      - Use "&TIM2" to initialize TIMODE2
+       WIPE      - GenWIPE, clears memory prior to linkage
+
+Each source file may be separately assembled using the RCO options.
+
+CHARSETS    - Character definitions for GPL
+DSRLNKS     - Ultra standard DSRLNK (carts are loaded in /4a mode)
+GETSTRS     - Input routine
+KEYS        - Keyboard/joystick routine for /4a emulation
+TASK78S     - The TIMODE / GPL interpreter startup and patching
+VDPIOS      - Vdp utilities
+
+The GPL program requires additional files to emulate the TI.
+       GPM      - Patched ROM
+       GPN      - GROM 0
+       GPO/GPP  - BASIC GROMS or Menu or other pre-loaded files
+
+Upon execution, GPL will check the TIMODE flag at >0126 and if set, will
+continue execution. The print spooler will be allowed to clear before
+entering TI Mode. The GPL title screen is interactive unless a cartridge
+is specified as a parameter, e.g., GPL XB.
+
+Programmer notes:
+       - Direct /4a-style CRU scanning is not emulated by the gate array.
+       - Cartridge space at >6000-7FFF is limited by the gate array
+       - Level 2 IO is limited to floppy disk devices; ROMPAGE may be
+         invoked to support hard drive level 2
+       - Powerup routine is now enforced when entering and returning
+         from /4a mode to ensure proper DSR setup.
+       - GPL task page  number is stored at address >8100; since TI
+         programs sometimes write the scratchpad mirrors, be sure to
+         exercise caution when using.
+
+
+LIMITATIONS (as noted in release doc)
+-------------------------------------
+GPL does not and cannot replace special TI cartridges such as the FinalROM,
+FinalGROM, UberGROM, Superspace II.  Some device functionality requires a
+mode called 'rompage' that exposes the peripheral expansion bus for programs
+needing direct access to the card. Hardware that might benefit from this
+mode includes the Myarc HFDC, SCSI, IDE, TIPI, SIDBlaster, and MBP cards.
+
+Programs that require direct scan of the /4a keyboard will not function as
+there is no mechanism to emulate the 9901 direct scan process.
+
+
+ENHANCEMENT LOG:
+---------------
+V7.40  Moved enhancement log to GPL-README.
+
+** End of file 18 March 2023, TT

@@ -1,0 +1,311 @@
+       REF  VSBR$
+       REF  VSBW$
+       REF  VMBW$
+       DEF  BLINKF
+       DEF  KSCAN
+       DEF  GETSTR
+*
+FIRST  EQU  1
+LAST   EQU  2
+CURREN EQU  3
+HIDDEN EQU  4
+SAVE   EQU  5
+*
+*
+*     R0---CURRENT CHARACTER
+*     R1---POINTER TO BUFFER START
+*     R2---MAXLEN (MUST BE >= 1 )
+*     R3---MAX ADDRESS POINTER
+*     R4---ADDRESS POINTER
+*
+GETSTR MOV  R2,R2
+       JNE  GETJ1
+       RT                SHOULD REPORT AN ERROR!
+*
+GETJ1  SETO @BLINKF
+       A    FIRST,R2
+       DEC  R2           R2 IS LAST CHARACTER
+       MOV  FIRST,CURREN
+       MOV  FIRST,HIDDEN
+       JMP  GET000
+*
+GETSET MOV  FIRST,CURREN
+       MOV  FIRST,HIDDEN
+*
+* show line to user from first to hidden
+*      fill rest with spaces
+*
+LOOPY  BLWP @DISPLA
+       CLR  R0
+       BLWP @KSCAN
+GET000 CI   R0,>FF00
+       JEQ  LOOPY
+*
+       CI   R0,>2000
+       JLT  GETCTL
+       CI   R0,>7E00
+       JGT  GETCTL
+*
+* TYPE OUT THE CURRENT CHARACTER
+*
+TYPE   MOVB R0,*CURREN+
+       BLWP @EMIT1
+*
+ENDCHK C    CURREN,HIDDEN
+       JLE  TYPE1
+       MOV  CURREN,HIDDEN
+*
+TYPE1  C    CURREN,LAST
+       JL   LOOPY
+       DEC  CURREN
+       LI   R0,>0800
+GETSE1 BLWP @EMIT1
+       JMP  LOOPY
+*
+GETCTL CI   R0,>8900  (FS)
+       JEQ  GETFS
+       CI   R0,>8800  (BS)
+       JEQ  GETBS
+       CI   R0,>8700  (ERASE)
+       JEQ  ERAS1
+       CI   R0,>0900  (SHOW LINE)
+       JEQ  SHOW
+       CI   R0,>8300  (DELETE)
+       JEQ  GETDEL
+       CI   R0,>8400  (INSERT)
+       JEQ  GETINS
+       ANDI R0,>7F00  (bug in geneve rom, for now)
+       CI   R0,>0D00  (ENTER)
+       JNE  LOOPY
+       B    @GETRET
+*
+************************************************************
+*
+GETFS  MOVB *CURREN+,R0
+       BLWP @EMIT1
+       JMP  ENDCHK
+*
+************************************************************
+*
+GETBS  C    CURREN,FIRST
+       JEQ  LOOPY
+*
+GETBS1 DEC  CURREN
+       LI   R0,>0800
+       JMP  GETSE1
+*
+************************************************************
+*
+ERAS1  LI   R0,>0800
+ERAS1A C    CURREN,FIRST
+       JEQ  ERAS2
+       BLWP @EMIT1
+       DEC  CURREN
+       JMP  ERAS1A
+*
+ERAS2  LI   R0,' '*256
+*
+ERASL1 BLWP @EMIT1
+       MOVB R0,*CURREN+
+       C    CURREN,LAST
+       JLE  ERASL1
+*
+       LI   R0,>0800
+ERASL2 BLWP @EMIT1
+       DEC  CURREN
+       C    CURREN,FIRST
+       JH   ERASL2
+       JMP  GETSET
+*
+************************************************************
+*
+GETDEL C    CURREN,HIDDEN
+       JHE  LOOPY
+*
+       MOV  CURREN,SAVE
+*
+GETDL1 INC  CURREN
+       C    CURREN,HIDDEN
+       JHE  GETDJ1
+*
+       MOVB *CURREN,@-1(CURREN)
+       MOVB *CURREN,R0
+       BLWP @EMIT1
+       JMP  GETDL1
+*
+GETDJ1 C    CURREN,LAST
+       JH   GETDJ2
+*
+       MOVB *CURREN,@-1(CURREN)
+       LI   R0,' '*256
+       BLWP @EMIT1
+       INC  CURREN
+       JMP  GETDJ1
+*
+GETDJ2 BLWP @EMIT1
+*
+       LI   R0,>0800
+GETDL2 BLWP @EMIT1
+       DEC  CURREN
+       C    CURREN,SAVE
+       JH   GETDL2
+*
+       DEC  HIDDEN
+       JMP  LOOPY
+*
+************************************************************
+*
+H20    EQU  $+2
+GETINS LI   R0,>2000
+       BLWP @EMIT1
+       MOV  CURREN,SAVE
+*
+GETIL1 C    CURREN,HIDDEN
+       JHE  GETIJ1
+       MOVB *CURREN,R0
+       BLWP @EMIT1
+       INC  CURREN
+       JMP  GETIL1
+*
+GETIJ1 LI   R0,>0800
+       BLWP @EMIT1
+*
+       C    CURREN,SAVE
+       JEQ  GETIJ2
+       DEC  CURREN
+       JMP  GETIJ1
+*
+GETIJ2 MOV  LAST,CURREN
+*
+GETIL2 MOVB @-1(CURREN),*CURREN
+       C    CURREN,SAVE
+       JLE  GETIJ3
+       DEC  CURREN
+       JMP  GETIL2
+*
+GETIJ3 MOVB @H20,*CURREN
+       C    HIDDEN,LAST
+       JHE  GETIJ4
+       INC  HIDDEN
+GETIJ4 B    @LOOPY
+*
+************************************************************
+*
+SHOW   MOV  LAST,HIDDEN
+*
+SHOWL1 C    HIDDEN,CURREN
+       JLE  SHOWJ1
+*
+       CB   *HIDDEN,@H20
+       JNE  SHOWJ1
+       DEC  HIDDEN
+       JMP  SHOWL1
+*
+SHOWJ1 INC  HIDDEN
+*
+SHOWL2 C    CURREN,HIDDEN
+       JEQ  SHOWJ2
+*
+       MOVB *CURREN+,R0
+       BLWP @EMIT1
+       JMP  SHOWL2
+*
+SHOWJ2 C    CURREN,LAST
+       JLE  SHOWN
+*
+       DEC  CURREN
+       LI   R0,>0800
+       BLWP @EMIT1
+*
+SHOWN  B    @LOOPY
+*
+************************************************************
+*
+GETRET C    HIDDEN,LAST
+       JH   DONE
+*
+       MOVB @H20,*HIDDEN+
+       JMP  GETRET
+*
+DONE   LI   R0,>0D0A
+       BLWP @EMIT1
+       SWPB R0
+       BLWP @EMIT1
+       CLR  @BLINKF
+       RT
+*
+H04    BYTE >04
+HFF    BYTE >FF
+*
+KREGS  BSS  32
+*
+EMIT1  DATA KREGS,$+2
+       RTWP
+*
+DISPLA DATA KREGS,$+2
+       LI   R0,440
+       MOV  @FIRST*2(R13),R1
+       MOV  @HIDDEN*2(R13),R2
+       S    R1,R2
+       JEQ  DISP00
+       BLWP @VMBW$
+*
+DISP00 A    R2,R0
+       LI   R1,SPACES
+       AI   R2,-40
+       NEG  R2
+       BLWP @VMBW$
+       RTWP
+*
+SPACES TEXT '                                        '
+*
+BLINKF DATA 0
+UNDON  DATA 0
+KSCAN  DATA KREGS,$+2
+*
+KL     MOV  @CURREN*2(R13),R0
+       S    @FIRST*2(R13),R0
+       ANDI R0,>007F
+       AI   R0,440
+       BLWP @VSBR$            read the current char
+       MOV  R1,R10
+*
+       SETO @UNDON
+*
+KL000  LI   R4,700
+       ABS  @BLINKF
+       JEQ  KL001
+*
+       MOV  @UNDON,R5
+       JEQ  KL010
+*
+       LI   R1,'__'
+       BLWP @VSBW$
+       JMP  KL001
+*
+KL010  MOV  R10,R1
+       BLWP @VSBW$
+*
+KL001  MOVB @H04,@>8374
+       LWPI >83E0
+       BL   @>E
+       LWPI KREGS
+       MOVB @>837C,R2
+       JNE  KL998
+       DEC  R4
+       JNE  KL001
+       INV  @UNDON
+       JMP  KL000
+*
+KL998  ABS  @BLINKF
+       JEQ  KL999
+       MOV  R10,R1
+       BLWP @VSBW$
+*
+KL999  CLR  *R13
+       MOVB @>8375,*R13
+*
+       RTWP
+*
+       END
+*

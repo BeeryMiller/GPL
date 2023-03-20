@@ -1,0 +1,48 @@
+*
+* VDP I/O
+*
+       DEF VSBW$,VSBR$
+       DEF VMBW$,VMBR$
+*
+VREGS  BSS 32
+VSBW$  DATA VREGS,$+2
+       BL @SETWAD
+       MOVB @2(R13),@>8C00
+       RTWP
+VMBW$  DATA VREGS,$+2
+       BL @SETWAD
+       MOV @2(R13),R0
+       MOV @4(R13),R1
+VMBW1  MOVB *R0+,@>8C00
+       DEC R1
+       JNE VMBW1
+       RTWP
+VSBR$  DATA VREGS,$+2
+       BL @SETRAD
+       NOP
+       MOVB @>8800,@2(R13)
+       RTWP
+VMBR$  DATA VREGS,$+2
+       BL @SETRAD
+       MOV @2(R13),R0
+       MOV @4(R13),R1
+VMBR1  MOVB @>8800,*R0+
+       DEC R1
+       JNE VMBR1
+       RTWP
+SETWAD LI R2,>4000
+       JMP SETAD
+SETRAD CLR R2
+SETAD  MOV *R13,R0
+       ANDI R0,>3FFF
+       SOC R2,R0
+       LIMI 0
+       SWPB R0
+       MOVB R0,@>8C02
+       SWPB R0
+       MOVB R0,@>8C02
+       NOP               NEEDED IN 80 COL TXT MODE
+       RT
+*
+       END
+*
